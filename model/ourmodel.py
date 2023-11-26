@@ -44,7 +44,7 @@ def get_vgg16_layer(model):
 class NTRENet(nn.Module):
     def __init__(self, layers=50, classes=2, zoom_factor=8, \
         criterion=nn.CrossEntropyLoss(ignore_index=255), BatchNorm=nn.BatchNorm2d, \
-        pretrained=True, sync_bn=True, shot=1, ppm_scales=[60, 30, 15, 8], vgg=False，bgpro_num = 1):
+        pretrained=True, sync_bn=True, shot=1, ppm_scales=[60, 30, 15, 8], vgg=False, bgpro_num = 1):
         super(NTRENet, self).__init__()
         assert layers in [50, 101, 152]
         print(ppm_scales)
@@ -251,13 +251,13 @@ class NTRENet(nn.Module):
 
         return optimizer
 
-    def forward(self, s_x, s_y,x, y, classes, prototype_neg_dict=None):
+    def forward(self, s_x, s_y, x, y, classes, prototype_neg_dict=None):
         x_size = x.size()
         assert (x_size[2]-1) % 8 == 0 and (x_size[3]-1) % 8 == 0
         h = int((x_size[2] - 1) / 8 * self.zoom_factor + 1)
         w = int((x_size[3] - 1) / 8 * self.zoom_factor + 1)
 
-        #   Query Feature
+        #   Query Feature -> ResNet
         with torch.no_grad():
             query_feat_0 = self.layer0(x)
             query_feat_1 = self.layer1(query_feat_0)
@@ -270,7 +270,7 @@ class NTRENet(nn.Module):
         query_feat = torch.cat([query_feat_3, query_feat_2], 1)
         query_feat = self.down_query(query_feat)
 
-        #   Support Feature     
+        #   Support Feature -> ResNet  
         supp_feat_list = []
         supp_nomask_feat_list = []
         final_supp_list = []
@@ -341,8 +341,11 @@ class NTRENet(nn.Module):
 
         bg = self.bg_prototype.expand(query_feat.size(0),-1,query_feat.size(2),query_feat.size(3))
 
+        # background elimination module, comment below for ablation 
         qrybg_feat = torch.cat((query_feat,bg),dim=1)
         qrybg_feat1 = self.down_bg(qrybg_feat)
+ 
+        # qrybg_feat1 = query_feat 
         qrybg_feat2 = self.bg_res1(qrybg_feat1) + qrybg_feat1         
         query_bg_out = self.bg_cls(qrybg_feat2)
         
@@ -351,6 +354,8 @@ class NTRENet(nn.Module):
             for supp_feat_nomask in supp_nomask_feat_list:
                 suppbg_feat = torch.cat((supp_feat_nomask,bg),dim=1)
                 suppbg_feat = self.down_bg(suppbg_feat)
+
+                # suppbg_feat = supp_feat_nomask
                 suppbg_feat = self.bg_res1(suppbg_feat) + suppbg_feat          
                 supp_bg_out = self.bg_cls(suppbg_feat)
                 supp_bg_out_list.append(supp_bg_out)
@@ -371,14 +376,15 @@ class NTRENet(nn.Module):
             corr_mask_bin = F.interpolate(corr_query_mask, size=(bin, bin), mode='bilinear', align_corners=True)
             merge_feat_binbg = torch.cat([query_feat_bin, bg_feat_bin],1)
             merge_feat_binbg = self.init_merge1[idx](merge_feat_binbg)
-            merge_feat_binfg = torch.cat([merge_feat_binbg,supp_feat_bin, corr_mask_bin],1)
+            merge_feat_binfg = torch.cat([merge_feat_binbg, supp_feat_bin, corr_mask_bin],1)
             merge_feat_binfg = self.init_merge2[idx](merge_feat_binfg)
             merge_feat_binfg = self.inital_beta_conv[idx](merge_feat_binfg) + merge_feat_binfg   
             inital_inner_out_bin = self.inital_inner_cls[idx](merge_feat_binfg)
             inital_out_list.append(inital_inner_out_bin)
 
+            ### DOEM
             query_bg_out_bin = F.interpolate(query_bg_out, size=(bin, bin), mode='bilinear', align_corners=True)
-            confused_mask = F.relu(1- query_bg_out_bin.max(1)[1].unsqueeze(1) -  inital_inner_out_bin.max(1)[1].unsqueeze(1)) 
+            confused_mask = F.relu(1- query_bg_out_bin.max(1)[1].unsqueeze(1) -  inital_inner_out_bin.max(1)[1].unsqueeze(1))   ### eq (7)
             confused_prototype = nn.AdaptiveAvgPool2d(1)(confused_mask*query_feat_bin)
             confused_prototype_bin = confused_prototype.expand(-1,-1,bin,bin)
             merge_feat_bin = torch.cat([merge_feat_binfg,confused_prototype_bin],1)
@@ -407,6 +413,7 @@ class NTRENet(nn.Module):
                 y, s_y, query_bg_out, supp_bg_out, classes, prototype_neg_dict)
 
         #   Output Part
+        
         if self.zoom_factor != 1:
             out = F.interpolate(out, size=(h, w), mode='bilinear', align_corners=True)
 
@@ -417,6 +424,7 @@ class NTRENet(nn.Module):
             main_loss = self.criterion(out, y.long())
             aux_loss1 = torch.zeros_like(main_loss).cuda()    
             aux_loss2 = torch.zeros_like(main_loss).cuda()    
+            # aux_loss2 = torch.zeros_like(out[0][0][0][0]).cuda()  
 
             for idx_k in range(len(out_list)):    
                 inner_out = out_list[idx_k]
@@ -433,16 +441,25 @@ class NTRENet(nn.Module):
             mygt1 = torch.ones(query_bg_out.size(0),h,w).cuda()
             mygt0 = torch.zeros(query_bg_out.size(0),h,w).cuda()
             query_bg_loss = self.weighted_BCE(query_bg_out, mygt0, y)+erfa*self.criterion(query_bg_out,mygt1.long())
+            aux_bg_loss=0
             for j,supp_bg_out in enumerate(supp_bg_out_list):
                 supp_bg_out = F.interpolate(supp_bg_out, size=(h, w), mode='bilinear', align_corners=True)
                 supp_bg_loss = self.weighted_BCE(supp_bg_out, mygt0, s_y[:,j,:,:])+erfa*self.criterion(supp_bg_out,mygt1.long())
                 aux_bg_loss = aux_bg_loss + supp_bg_loss
 
             bg_loss = (query_bg_loss + aux_bg_loss)/ (len(supp_bg_out_list)+1)     
+            # bg_loss = torch.zeros_like(out[0][0][0][0]).cuda()  
 
-            return out.max(1)[1], main_loss,bg_loss+0.4*aux_loss1+0.6*aux_loss2+0.01*prototype_contrast_loss,prototype_neg_dict
+            # bg_loss+0.4*aux_loss1+0.6*aux_loss2+0.01*prototype_contrast_loss
+
+            return out.max(1)[1], main_loss, bg_loss+0.4*aux_loss1+0.6*aux_loss2+0.01*prototype_contrast_loss, prototype_neg_dict
+            # return out.max(1)[1], aux_loss2, bg_loss, prototype_neg_dict
+            # return inner_out.max(1)[1], aux_loss2, bg_loss, prototype_neg_dict
         else:
             return out
+            # inner_out = inital_out_list[-1]
+            # inner_out = F.interpolate(inner_out, size=(h, w), mode='bilinear', align_corners=True)
+            # return inner_out
 
     def weighted_BCE(self,input, target,mask):
         loss_list =[]

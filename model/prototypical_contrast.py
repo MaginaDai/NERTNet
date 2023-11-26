@@ -61,6 +61,10 @@ class PrototypeContrastLoss(nn.Module, ABC):
         Q_labels = torch.where(Q_labels==255,zeros,Q_labels)
         S_labels = torch.where(S_labels==255,zeros,S_labels)
 
+        if S_labels.shape[1] > 1:
+            S_labels = S_labels[:, 0, :, :]
+            S_labels = S_labels.unsqueeze(1)
+
         Q_disrupt_labels = F.relu(1-query_bg_out.max(1)[1].unsqueeze(1) - Q_labels)
         S_disrupt_labels = F.relu(1-supp_bg_out.max(1)[1].unsqueeze(1) - S_labels)
 

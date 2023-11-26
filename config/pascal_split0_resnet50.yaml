@@ -1,5 +1,5 @@
 DATA:
-  data_root: /disk2/lyw/datasets/VOCdevkit2012/VOC2012
+  data_root: datasets/VOCdevkit/VOC2012/
   train_list: ./lists/pascal/voc_sbd_merge_noduplicate.txt
   val_list: ./lists/pascal/val.txt
   classes: 2
@@ -21,7 +21,7 @@ TRAIN:
   aux_weight: 1.0
   train_gpu: [0]
   workers: 8  # data loader workers
-  batch_size: 4 # batch size for training
+  batch_size: 12 # batch size for training
   batch_size_val: 1
   base_lr: 0.0025
   epochs: 150
@@ -32,8 +32,8 @@ TRAIN:
   manual_seed: 321
   print_freq: 5
   save_freq: 20
-  save_path: ./results/pascal/resnet50_1shot/nertnet_split0_fgprototype_withauxloss_xiuzheng_fg1_mixbasesuppcontrast_withdeatch_withmaxcontrast
-  weight: 
+  save_path: ./results/pascal/resnet101_1shot/test
+  weight: 'results/pascal/resnet50_1shot/btz_12/train_epoch_90_0.6093789180381786.pth'
   resume: 
   evaluate: True
   split: 0
@@ -46,7 +46,7 @@ TRAIN:
   use_split_coco: False
   resized_val: True
   ori_resize: True  # use original label for evaluation
-  bgpro_num: 2
+  bgpro_num: 1
 ## deprecated multi-processing training
 Distributed:
   dist_url: tcp://127.0.0.1:6789
